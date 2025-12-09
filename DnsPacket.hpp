@@ -21,6 +21,8 @@ public:
 
   static DnsPacket fromBuffer(BytePacketBuffer &buffer);
 
+  void write(BytePacketBuffer &);
+
   friend std::ostream &operator<<(std::ostream &stream,
                                   const DnsPacket &packet) {
     // print header
@@ -40,6 +42,32 @@ public:
     return stream;
   }
 };
+
+inline void DnsPacket::write(BytePacketBuffer &buffer) {
+  this->header.questions = static_cast<uint16_t>(this->questions.size());
+  this->header.answers = static_cast<uint16_t>(this->answers.size());
+  this->header.authoritativeEntries =
+      static_cast<uint16_t>(this->authorities.size());
+  this->header.resourceEntries = static_cast<uint16_t>(this->resources.size());
+
+  this->header.write(buffer);
+
+  for (auto &question : this->questions) {
+    question.write(buffer);
+  }
+
+  for (auto &rec : this->answers) {
+    writeDnsRecord(rec, buffer);
+  }
+
+  for (auto &rec : this->authorities) {
+    writeDnsRecord(rec, buffer);
+  }
+
+  for (auto &rec : this->resources) {
+    writeDnsRecord(rec, buffer);
+  }
+}
 
 inline DnsPacket DnsPacket::fromBuffer(BytePacketBuffer &buffer) {
   DnsPacket result;

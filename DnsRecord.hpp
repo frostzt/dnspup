@@ -24,24 +24,22 @@ struct ARecord {
   uint32_t ttl;
 };
 
-inline std::string ipv4ToString(const std::array<uint8_t, 4>& addr) {
-  return std::to_string(addr[0]) + "." +
-         std::to_string(addr[1]) + "." +
-         std::to_string(addr[2]) + "." +
-         std::to_string(addr[3]);
+inline std::string ipv4ToString(const std::array<uint8_t, 4> &addr) {
+  return std::to_string(addr[0]) + "." + std::to_string(addr[1]) + "." +
+         std::to_string(addr[2]) + "." + std::to_string(addr[3]);
 }
 
-inline std::ostream& operator<<(std::ostream& stream, const ARecord& record) {
-  stream << "A Record { domain: " << record.domain 
-         << ", addr: " << ipv4ToString(record.addr)
-         << ", ttl: " << record.ttl << " }";
+inline std::ostream &operator<<(std::ostream &stream, const ARecord &record) {
+  stream << "A Record { domain: " << record.domain
+         << ", addr: " << ipv4ToString(record.addr) << ", ttl: " << record.ttl
+         << " }";
   return stream;
 }
 
-inline std::ostream& operator<<(std::ostream& stream, const UnknownRecord& record) {
-  stream << "Unknown Record { domain: " << record.domain 
-         << ", qtype: " << record.qtype 
-         << ", data_len: " << record.dataLength 
+inline std::ostream &operator<<(std::ostream &stream,
+                                const UnknownRecord &record) {
+  stream << "Unknown Record { domain: " << record.domain
+         << ", qtype: " << record.qtype << ", data_len: " << record.dataLength
          << ", ttl: " << record.ttl << " }";
   return stream;
 }
@@ -53,6 +51,36 @@ inline std::array<uint8_t, 4> ipv4FromUInt32(uint32_t rawAddr) {
           static_cast<uint8_t>((rawAddr >> 16) & 0xFF),
           static_cast<uint8_t>((rawAddr >> 8) & 0xFF),
           static_cast<uint8_t>(rawAddr & 0xFF)};
+}
+
+inline size_t writeDnsRecord(DnsRecord record, BytePacketBuffer &buffer) {
+  auto startPos = buffer.currentPosition();
+
+  std::visit(
+      [&](auto &&arg) {
+        using T = std::decay_t<decltype(arg)>;
+
+        if constexpr (std::is_same_v<T, A>) {
+          auto arecord = std::get<ARecord>(record);
+
+          buffer.writeQName(arecord.domain);
+          buffer.writeU16(fromQueryTypeToNumber(A{}));
+          buffer.writeU16(1); // class
+          buffer.writeU32(arecord.ttl);
+          buffer.writeU16(4);
+
+          // write the address
+          buffer.writeU8(arecord.addr[0]);
+          buffer.writeU8(arecord.addr[1]);
+          buffer.writeU8(arecord.addr[2]);
+          buffer.writeU8(arecord.addr[3]);
+        } else if constexpr (std::is_same_v<T, UnknownRecord>) {
+          std::cout << "Skipping record of type Unknown";
+        };
+      },
+      record);
+
+  return buffer.currentPosition() - startPos;
 }
 
 inline DnsRecord readDnsRecord(BytePacketBuffer &buffer) {
