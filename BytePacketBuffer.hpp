@@ -149,16 +149,19 @@ inline void BytePacketBuffer::writeU32(uint32_t value) {
 }
 
 inline std::optional<uint32_t> BytePacketBuffer::readU32() {
-  uint32_t result = 0;
-  for (size_t i = 0; i < 4; i++) {
-    auto readVal = this->read();
-    if (!readVal.has_value()) {
-      return std::nullopt;
-    }
-    result |= static_cast<uint32_t>(*readVal) << (i * 8);
+  auto byte1 = this->read();
+  auto byte2 = this->read();
+  auto byte3 = this->read();
+  auto byte4 = this->read();
+  
+  if (!byte1 || !byte2 || !byte3 || !byte4) {
+    return std::nullopt;
   }
-
-  return result;
+  
+  return (static_cast<uint32_t>(*byte1) << 24) |
+         (static_cast<uint32_t>(*byte2) << 16) |
+         (static_cast<uint32_t>(*byte3) << 8) |
+          static_cast<uint32_t>(*byte4);
 }
 
 inline void BytePacketBuffer::writeQName(std::string &qname) {

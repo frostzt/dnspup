@@ -14,7 +14,7 @@
 int main() {
   try {
     auto qname = "www.yahoo.com";
-    auto qtype = A{};
+    auto qtype = CNAME{};
 
     // create udp socket
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -45,7 +45,7 @@ int main() {
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(53);
-    inet_pton(AF_INET, "1.1.1.1", &server_addr.sin_addr);
+    inet_pton(AF_INET, "8.8.8.8", &server_addr.sin_addr);
 
     // send this data
     sendto(sockfd, reqBuffer.buf, reqBuffer.currentPosition(), 0,

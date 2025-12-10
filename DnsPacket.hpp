@@ -34,7 +34,7 @@ public:
     }
 
     // print answers
-    std::cout << "\n\n----- [[ANSWERS]] -----\n";
+    std::cout << "\n\n----- [[ANSWERS; LENGTH=" << packet.answers.size()  << "]] -----\n";
     for (const auto &answer : packet.answers) {
       std::visit([](const auto &r) { std::cout << r << std::endl; }, answer);
     }
