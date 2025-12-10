@@ -13,7 +13,7 @@
 
 int main() {
   try {
-    auto qname = "fofofoofof.com";
+    auto qname = "www.yahoo.com";
     auto qtype = A{};
 
     // create udp socket
