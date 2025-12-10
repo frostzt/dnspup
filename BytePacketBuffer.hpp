@@ -60,6 +60,12 @@ public:
 
   // write a qname
   void writeQName(std::string &);
+
+  // sets value at position
+  void set(size_t, uint8_t);
+
+  // sets a 16 bit value at position
+  void setU16(size_t, uint16_t);
 };
 
 inline size_t BytePacketBuffer::currentPosition() { return this->currPos; };
@@ -70,6 +76,15 @@ inline void BytePacketBuffer::step(size_t position) {
 
 inline void BytePacketBuffer::seek(size_t position) {
   this->currPos = position;
+}
+
+inline void BytePacketBuffer::set(size_t position, uint8_t value) {
+  this->buf[position] = value;
+}
+
+inline void BytePacketBuffer::setU16(size_t position, uint16_t value) {
+  this->set(position, static_cast<uint8_t>(value >> 8));
+  this->set(position + 1, static_cast<uint8_t>(value & 0xFF));
 }
 
 inline std::optional<uint8_t> BytePacketBuffer::read() {
