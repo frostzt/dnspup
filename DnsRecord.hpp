@@ -116,7 +116,7 @@ inline size_t writeDnsRecord(DnsRecord record, BytePacketBuffer &buffer) {
       [&](auto &&arg) {
         using T = std::decay_t<decltype(arg)>;
 
-        if constexpr (std::is_same_v<T, A>) {
+        if constexpr (std::is_same_v<T, ARecord>) {
           auto arecord = std::get<ARecord>(record);
 
           buffer.writeQName(arecord.domain);
@@ -130,7 +130,7 @@ inline size_t writeDnsRecord(DnsRecord record, BytePacketBuffer &buffer) {
           buffer.writeU8(arecord.addr[1]);
           buffer.writeU8(arecord.addr[2]);
           buffer.writeU8(arecord.addr[3]);
-        } else if constexpr (std::is_same_v<T, NS>) {
+        } else if constexpr (std::is_same_v<T, NSRecord>) {
           auto nsrecord = std::get<NSRecord>(record);
 
           buffer.writeQName(nsrecord.domain);
@@ -145,7 +145,7 @@ inline size_t writeDnsRecord(DnsRecord record, BytePacketBuffer &buffer) {
 
           auto size = buffer.currentPosition() - (pos + 2);
           buffer.setU16(pos, static_cast<uint16_t>(size));
-        } else if constexpr (std::is_same_v<T, CNAME>) {
+        } else if constexpr (std::is_same_v<T, CNAMERecord>) {
           auto cnamerecord = std::get<CNAMERecord>(record);
 
           buffer.writeQName(cnamerecord.domain);
@@ -160,7 +160,7 @@ inline size_t writeDnsRecord(DnsRecord record, BytePacketBuffer &buffer) {
 
           auto size = buffer.currentPosition() - (pos + 2);
           buffer.setU16(pos, static_cast<uint16_t>(size));
-        } else if constexpr (std::is_same_v<T, MX>) {
+        } else if constexpr (std::is_same_v<T, MXRecord>) {
           auto mxrecord = std::get<MXRecord>(record);
 
           buffer.writeQName(mxrecord.domain);
@@ -176,7 +176,7 @@ inline size_t writeDnsRecord(DnsRecord record, BytePacketBuffer &buffer) {
 
           auto size = buffer.currentPosition() - (pos + 2);
           buffer.setU16(pos, static_cast<uint16_t>(size));
-        } else if constexpr (std::is_same_v<T, AAAA>) {
+        } else if constexpr (std::is_same_v<T, AAAARecord>) {
           auto aaaarecord = std::get<AAAARecord>(record);
 
           buffer.writeQName(aaaarecord.domain);
@@ -188,7 +188,7 @@ inline size_t writeDnsRecord(DnsRecord record, BytePacketBuffer &buffer) {
           for (auto octet : aaaarecord.addr) {
             buffer.writeU8(octet);
           }
-        } else if constexpr (std::is_same_v<T, Unknown>) {
+        } else if constexpr (std::is_same_v<T, UnknownRecord>) {
           std::cout << "Skipping record of type Unknown";
         };
       },
