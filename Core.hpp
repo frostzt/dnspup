@@ -14,8 +14,15 @@
 #include "DnsQuestion.hpp"
 #include "QueryType.hpp"
 #include "ResultCode.hpp"
+#include "StringUtils.hpp"
 
-inline DnsPacket lookup(std::string &qname, QueryType qtype) {
+struct Server {
+  std::array<uint8_t, 4> s_addr;
+  uint16_t s_port;
+};
+
+inline DnsPacket lookup(std::string &qname, QueryType qtype,
+                        Server serverConf) {
   // create udp socket
   int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 
@@ -44,8 +51,12 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype) {
   // create a server pointing to dns resolver
   struct sockaddr_in serverAddr;
   serverAddr.sin_family = AF_INET;
-  serverAddr.sin_port = htons(53);
-  inet_pton(AF_INET, "8.8.8.8", &serverAddr.sin_addr);
+  serverAddr.sin_port = htons(serverConf.s_port);
+  serverAddr.sin_addr.s_addr =
+      htonl((static_cast<uint32_t>(serverConf.s_addr[0]) << 24) |
+            (static_cast<uint32_t>(serverConf.s_addr[1]) << 16) |
+            (static_cast<uint32_t>(serverConf.s_addr[2]) << 8) |
+            static_cast<uint32_t>(serverConf.s_addr[3]));
 
   // send this to DNS resolver
   sendto(sockfd, reqBuffer.buf, reqBuffer.currentPosition(), 0,
@@ -60,6 +71,56 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype) {
 
   close(sockfd);
   return resPacket;
+}
+
+inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype) {
+  // we'll always start with *a.root-servers.net*
+  auto ns = stringutils::parseIpv4("198.41.0.4");
+
+  while (true) {
+    std::cout << "attempting lookup of " << fromQueryTypeToNumber(qtype) << " "
+              << qname << " with ns " << stringutils::ipv4ToString(*ns) << "\n";
+
+    auto nscopy = *ns;
+
+    Server server{nscopy, 53};
+    auto response = lookup(qname, qtype, server);
+
+    // if entries in answer section and no errors we are done
+    if (!response.answers.empty() &&
+        response.header.rescode == ResultCode::NOERROR) {
+      return response;
+    }
+
+    // exit if NXDOMAIN
+    if (response.header.rescode == ResultCode::NXDOMAIN) {
+      return response;
+    }
+
+    auto resolvedNs = response.getResolvedNs(qname);
+    if (resolvedNs.has_value()) {
+      ns = resolvedNs;
+      continue;
+    }
+
+    std::string newNsServer;
+    auto unresolvedNs = response.getUnresolvedNs(qname);
+    if (!unresolvedNs.has_value()) {
+      return response;
+    }
+
+    std::string newNsName = *unresolvedNs;
+
+    DnsPacket recursiveResponse = recursiveLookup(newNsName, A{});
+
+    auto newNs = recursiveResponse.getRandomA();
+    if (newNs.has_value()) {
+      ns = newNs;
+      continue;
+    } else {
+      return response;
+    }
+  }
 }
 
 inline void handleQuery(int sockfd) {
@@ -93,7 +154,7 @@ inline void handleQuery(int sockfd) {
 
     // forward query and handle response
     try {
-      DnsPacket result = lookup(question.name, question.qtype);
+      DnsPacket result = recursiveLookup(question.name, question.qtype);
 
       response.questions.push_back(question);
       response.header.rescode = result.header.rescode;
