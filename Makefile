@@ -1,6 +1,6 @@
 CXX = clang++
 CXXFLAGS = -std=c++20 -Wall -Wextra -g -O0
-TARGET = dns_resolver
+TARGET = bin/dns_resolver
 
 all: $(TARGET)
 
