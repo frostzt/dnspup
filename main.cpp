@@ -3,62 +3,42 @@
 #include <exception>
 #include <iostream>
 #include <netinet/in.h>
-#include <string>
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "BytePacketBuffer.hpp"
-#include "DnsPacket.hpp"
-#include "DnsQuestion.hpp"
+#include "Core.hpp"
 
 int main() {
   try {
-    auto qname = "www.yahoo.com";
-    auto qtype = CNAME{};
-
-    // create udp socket
+    // bind udp socket to 2053
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-
-    // bind to local address
-    struct sockaddr_in local_addr;
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_addr.s_addr = INADDR_ANY;
-    local_addr.sin_port = htons(43210);
-    if (bind(sockfd, (const struct sockaddr *)&local_addr, sizeof(local_addr)) <
-        0) {
-      std::cerr << "bind failed";
+    if (sockfd < 0) {
+      std::cerr << "Failed to create socket" << std::endl;
       return 1;
     }
 
-    // build DNS Packet
-    DnsPacket packet;
-    packet.header.id = 9475;
-    packet.header.questions = 1;
-    packet.header.recursionDesired = true;
-    packet.questions.push_back(DnsQuestion(qname, qtype));
+    struct sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_port = htons(2053);
 
-    // write this packet to buffer
-    BytePacketBuffer reqBuffer;
-    packet.write(reqBuffer);
+    if (bind(sockfd, (const struct sockaddr *)&serverAddr, sizeof(serverAddr)) <
+        0) {
+      std::cerr << "Failed to bind socket" << std::endl;
+      close(sockfd);
+      return 1;
+    }
 
-    // Send this to DNS Server
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(53);
-    inet_pton(AF_INET, "8.8.8.8", &server_addr.sin_addr);
+    std::cout << "DNS Server listening on 0.0.0.0:2053" << std::endl;
 
-    // send this data
-    sendto(sockfd, reqBuffer.buf, reqBuffer.currentPosition(), 0,
-           (struct sockaddr *)&server_addr, sizeof(server_addr));
-
-    // receive response
-    BytePacketBuffer resBuffer;
-    recvfrom(sockfd, resBuffer.buf, 512, 0, nullptr, nullptr);
-
-    // parse and print
-    DnsPacket resPacket = DnsPacket::fromBuffer(resBuffer);
-
-    std::cout << resPacket;
+    // handle queries
+    while (true) {
+      try {
+        handleQuery(sockfd);
+      } catch (const std::exception &e) {
+        std::cerr << "An exception occured: " << e.what() << std::endl;
+      }
+    }
 
     close(sockfd);
   } catch (const std::exception &e) {
