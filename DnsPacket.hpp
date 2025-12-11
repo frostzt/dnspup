@@ -15,10 +15,6 @@
 #include "DnsRecord.hpp"
 
 class DnsPacket {
-private:
-  std::vector<std::pair<std::string_view, std::string_view>>
-  getNs(const std::string &qname) const;
-
 public:
   DnsHeader header;
   std::vector<DnsQuestion> questions;
@@ -29,6 +25,9 @@ public:
   DnsPacket() = default;
 
   static DnsPacket fromBuffer(BytePacketBuffer &buffer);
+
+  std::vector<std::pair<std::string_view, std::string_view>>
+  getNs(const std::string &qname) const;
 
   void write(BytePacketBuffer &);
 
@@ -111,7 +110,6 @@ DnsPacket::getResolvedNs(const std::string &qname) const {
 inline std::optional<std::string>
 DnsPacket::getUnresolvedNs(const std::string &qname) const {
   auto nameservers = this->getNs(qname);
-
   if (!nameservers.empty()) {
     return std::string(nameservers[0].second);
   }

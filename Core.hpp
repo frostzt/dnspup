@@ -76,11 +76,10 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype,
 
 inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
                                  DnsCache &cache) {
-  // check cache
+  // check main cache
   auto cached = cache.lookup(qname, qtype);
   if (cached.has_value()) {
     std::cout << "Cache HIT: " << qname << std::endl;
-
     DnsPacket response;
     response.answers = *cached;
     response.header.rescode = ResultCode::NOERROR;
@@ -89,8 +88,31 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
 
   std::cout << "Cache MISS: " << qname << std::endl;
 
-  // we'll always start with *a.root-servers.net*
-  auto ns = stringutils::parseIpv4("198.41.0.4");
+  // try to find cached ns for this domain
+  std::optional<std::array<uint8_t, 4>> ns = std::nullopt;
+  std::string domain = qname;
+  while (true) {
+    ns = cache.lookupNS(domain);
+    if (ns.has_value()) {
+      std::cout << "NS Cache HIT for domain " << domain << " -> "
+                << stringutils::ipv4ToString(*ns) << std::endl;
+      break;
+    }
+
+    // move to parent domain
+    size_t dot = domain.find('.');
+    if (dot == std::string::npos) {
+      break;
+    }
+    domain = domain.substr(dot + 1);
+  }
+
+  // if no cached ns found start from root
+  if (!ns.has_value()) {
+    // we'll always start with *a.root-servers.net*
+    ns = stringutils::parseIpv4("198.41.0.4");
+    std::cout << "Starting from root server" << std::endl;
+  }
 
   while (true) {
     std::cout << "attempting lookup of " << fromQueryTypeToNumber(qtype) << " "
@@ -111,6 +133,23 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
     // exit if NXDOMAIN
     if (response.header.rescode == ResultCode::NXDOMAIN) {
       return response;
+    }
+
+    // cache NS records from authority section
+    auto nameservers = response.getNs(qname);
+    for (const auto &[domain, host] : nameservers) {
+      // look for glue records (a records for ns in addtional section)
+      for (const auto &resource : response.resources) {
+        if (auto *arecord = std::get_if<ARecord>(&resource)) {
+          if (arecord->domain == host) {
+            // cache this ns
+            std::string domainStr(domain);
+            cache.insertNS(domainStr, arecord->addr, arecord->ttl);
+            std::cout << "Cached NS: " << domainStr << " -> "
+                      << stringutils::ipv4ToString(arecord->addr) << std::endl;
+          }
+        }
+      }
     }
 
     auto resolvedNs = response.getResolvedNs(qname);

@@ -22,6 +22,12 @@ struct CacheStats {
   uint64_t inserts = 0;
   uint64_t evictions = 0;
   uint64_t expirations = 0;
+
+  // ns cache stats
+  uint64_t nsHits = 0;
+  uint64_t nsMisses = 0;
+  uint64_t nsInserts = 0;
+
   size_t currentEntries = 0;
   size_t maxEntries = 0;
 
@@ -29,6 +35,11 @@ struct CacheStats {
    * Calculate cache hit rate as a percentage
    **/
   double hitRate() const;
+
+  /**
+   * Calculate ns cache hit rate as a percentage
+   **/
+  double nsHitRate() const;
 
   /**
    * Print cache statistics to stdout
@@ -46,6 +57,13 @@ inline double CacheStats::hitRate() const {
   if (total == 0)
     return 0.0;
   return (static_cast<double>(hits) / total) * 100.0;
+}
+
+inline double CacheStats::nsHitRate() const {
+  uint64_t total = nsHits + nsMisses;
+  if (total == 0)
+    return 0.0;
+  return (static_cast<double>(nsHits) / total) * 100.0;
 }
 
 inline void CacheStats::reset() {
@@ -67,6 +85,11 @@ inline void CacheStats::print() const {
   std::cout << "Expirations: " << expirations << "\n";
   std::cout << "Current Entries: " << currentEntries << "\n";
   std::cout << "Max Entries: " << maxEntries << "\n";
+  std::cout << "\n---- NS Cache --\n";
+  std::cout << "NS Hits: " << nsHits << "\n";
+  std::cout << "NS Misses: " << nsMisses << "\n";
+  std::cout << "NS Inserts: " << nsInserts << "\n";
+  std::cout << "NS Hit Rate: " << nsHitRate() << "%\n";
   std::cout << "========================\n\n";
 }
 

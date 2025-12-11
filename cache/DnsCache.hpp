@@ -23,6 +23,7 @@ class DnsCache {
 private:
   // Storage: map<cacheKey, vector<CacheEntry>>
   std::unordered_map<std::string, std::vector<CacheEntry>> cache;
+  std::unordered_map<std::string, NSCacheEntry> nsCache;
 
   // config
   uint32_t minTTL = 60;
@@ -48,6 +49,7 @@ private:
   std::unordered_map<std::string, std::list<std::string>::iterator>
       lruMap; // quick lookup
   size_t maxEntries = 10000;
+  size_t maxNsEntries = 1000;
 
 public:
   DnsCache(uint32_t minTTL_ = 60, uint32_t maxTTL_ = 86400)
@@ -56,10 +58,13 @@ public:
   // Lookup cache records
   std::optional<std::vector<DnsRecord>> lookup(const std::string &qname,
                                                QueryType qtype);
+  std::optional<std::array<uint8_t, 4>> lookupNS(const std::string &domain);
 
   // Insert records into cache
   void insert(const std::string &qname, QueryType qtype,
               const std::vector<DnsRecord> &records);
+  void insertNS(const std::string &domain, const std::array<uint8_t, 4> &ip,
+                uint32_t ttl);
 
   // Manual cleanup
   void cleanupExpired();
@@ -187,6 +192,30 @@ DnsCache::lookup(const std::string &qname, QueryType qtype) {
   return records;
 }
 
+inline std::optional<std::array<uint8_t, 4>>
+DnsCache::lookupNS(const std::string &domain) {
+  auto it = this->nsCache.find(domain);
+  if (it == this->nsCache.end()) {
+    // ns cache miss
+    this->stats.nsMisses++;
+    return std::nullopt;
+  }
+
+  NSCacheEntry &entry = it->second;
+
+  // check if expired
+  if (entry.isExpired()) {
+    this->nsCache.erase(it);
+    this->stats.nsMisses++;
+    return std::nullopt;
+  }
+
+  // NS cache hit
+  entry.hitCount++;
+  this->stats.nsHits++;
+  return entry.ip;
+}
+
 inline void DnsCache::insert(const std::string &qname, QueryType qtype,
                              const std::vector<DnsRecord> &records) {
   if (records.empty()) {
@@ -228,6 +257,30 @@ inline void DnsCache::insert(const std::string &qname, QueryType qtype,
   }
 }
 
+inline void DnsCache::insertNS(const std::string &domain,
+                               const std::array<uint8_t, 4> &ip, uint32_t ttl) {
+  uint32_t enforcedTTL = this->enforceTTLBounds(ttl);
+  if (enforcedTTL == 0) {
+    return;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+
+  NSCacheEntry entry;
+  entry.ip = ip;
+  entry.insertedAt = now;
+  entry.expiresAt = now + std::chrono::seconds(enforcedTTL);
+  entry.originalTTL = enforcedTTL;
+  entry.hitCount = 0;
+
+  if (this->nsCache.size() >= this->maxNsEntries) {
+    return;
+  }
+
+  nsCache[domain] = entry;
+  this->stats.nsInserts++;
+}
+
 inline void DnsCache::cleanupExpired() {
   for (auto it = cache.begin(); it != cache.end();) {
     this->removeExpiredEntries(it->second);
@@ -241,6 +294,14 @@ inline void DnsCache::cleanupExpired() {
 
       this->lruMap.erase(it->first);
       it = cache.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  for (auto it = nsCache.begin(); it != nsCache.end();) {
+    if (it->second.isExpired()) {
+      it = nsCache.erase(it);
     } else {
       ++it;
     }

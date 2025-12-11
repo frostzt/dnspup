@@ -1,3 +1,4 @@
+PROJECT = dnspup
 CXX = clang++
 CXXFLAGS = -std=c++20 -Wall -Wextra -g -O0 -I .
 TARGET = bin/dnspup
