@@ -10,6 +10,9 @@
 
 int main() {
   try {
+    // create cache
+    DnsCache cache(60, 86400);
+
     // bind udp socket to 2053
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -34,11 +37,15 @@ int main() {
     // handle queries
     while (true) {
       try {
-        handleQuery(sockfd);
+        handleQuery(sockfd, cache);
       } catch (const std::exception &e) {
         std::cerr << "An exception occured: " << e.what() << std::endl;
       }
     }
+
+    // stats
+    std::cout << "\nShutting down...\n";
+    cache.printStats();
 
     close(sockfd);
   } catch (const std::exception &e) {

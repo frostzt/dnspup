@@ -1,0 +1,254 @@
+/**
+ * Author: frostzt
+ *
+ * This file defines the main Cache interface and implementation
+ **/
+
+#ifndef DNS_CACHE_HPP
+#define DNS_CACHE_HPP
+
+#include <algorithm>
+#include <chrono>
+#include <list>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "../QueryType.hpp"
+#include "CacheEntry.hpp"
+#include "CacheStats.hpp"
+
+class DnsCache {
+private:
+  // Storage: map<cacheKey, vector<CacheEntry>>
+  std::unordered_map<std::string, std::vector<CacheEntry>> cache;
+
+  // config
+  uint32_t minTTL = 60;
+  uint32_t maxTTL = 86400;
+
+  // stats
+  CacheStats stats;
+
+  // Helper: generate cache key
+  std::string makeCacheKey(const std::string &qname, QueryType qtype);
+
+  // Helper: extract TTL from DnsRecord variant
+  uint32_t extractTTL(const DnsRecord &record);
+
+  // Helper: enforce TTL bounds
+  uint32_t enforceTTLBounds(uint32_t ttl);
+
+  // Helper: remove expired entries from a bucket
+  void removeExpiredEntries(std::vector<CacheEntry> &entries);
+
+  // -------- LRU TRACKING --------
+  std::list<std::string> lruList; // dll
+  std::unordered_map<std::string, std::list<std::string>::iterator>
+      lruMap; // quick lookup
+  size_t maxEntries = 10000;
+
+public:
+  DnsCache(uint32_t minTTL_ = 60, uint32_t maxTTL_ = 86400)
+      : minTTL(minTTL_), maxTTL(maxTTL_) {}
+
+  // Lookup cache records
+  std::optional<std::vector<DnsRecord>> lookup(const std::string &qname,
+                                               QueryType qtype);
+
+  // Insert records into cache
+  void insert(const std::string &qname, QueryType qtype,
+              const std::vector<DnsRecord> &records);
+
+  // Manual cleanup
+  void cleanupExpired();
+
+  // Stats access
+  const CacheStats &getStats() const;
+  void printStats() const;
+
+  // -------- LRU OPS --------
+  void evictLRU();
+  void updateLRU(const std::string &key);
+};
+
+inline void DnsCache::updateLRU(const std::string &key) {
+  auto node = this->lruMap.find(key);
+
+  // Remove if the key exists
+  if (node != this->lruMap.end()) {
+    this->lruList.erase(node->second);
+  }
+
+  this->lruList.push_front(key);
+  this->lruMap[key] = this->lruList.begin();
+};
+
+inline void DnsCache::evictLRU() {
+  if (lruList.empty()) {
+    return;
+  }
+
+  auto node = this->lruList.back();
+
+  // remove from the cache map
+  size_t numRecords = this->cache[node].size();
+  this->cache.erase(node);
+  this->lruList.pop_back();
+  this->lruMap.erase(node);
+
+  this->stats.evictions++;
+  this->stats.currentEntries -= numRecords;
+}
+
+inline void DnsCache::removeExpiredEntries(std::vector<CacheEntry> &entries) {
+  auto origSize = entries.size();
+
+  entries.erase(
+      std::remove_if(entries.begin(), entries.end(),
+                     [](const CacheEntry &entry) { return entry.isExpired(); }),
+      entries.end());
+
+  size_t removed = origSize - entries.size();
+  if (removed > 0) {
+    stats.expirations += removed;
+    stats.currentEntries -= removed;
+  }
+}
+
+inline std::string DnsCache::makeCacheKey(const std::string &qname,
+                                          QueryType qtype) {
+  auto qtypenum = fromQueryTypeToNumber(qtype);
+
+  std::string result;
+  result.reserve(qname.size() + 1 + 10);
+
+  for (char c : qname) {
+    result += std::tolower(static_cast<unsigned char>(c));
+  }
+
+  result += ':';
+  result += std::to_string(qtypenum);
+  return result;
+}
+
+inline uint32_t DnsCache::enforceTTLBounds(uint32_t ttl) {
+  if (ttl == 0)
+    return 0;
+  if (ttl < minTTL)
+    return minTTL;
+  if (ttl > maxTTL)
+    return maxTTL;
+  return ttl;
+}
+
+inline uint32_t DnsCache::extractTTL(const DnsRecord &record) {
+  return std::visit([](const auto &r) { return r.ttl; }, record);
+}
+
+inline std::optional<std::vector<DnsRecord>>
+DnsCache::lookup(const std::string &qname, QueryType qtype) {
+  const std::string key = this->makeCacheKey(qname, qtype);
+
+  auto it = this->cache.find(key);
+  if (it == this->cache.end()) {
+    // cache miss
+    stats.misses++;
+    return std::nullopt;
+  }
+
+  // remove expired entires
+  this->removeExpiredEntries(it->second);
+
+  // if all entries expired remove the bucket (key)
+  if (it->second.empty()) {
+    this->cache.erase(it);
+    stats.misses++;
+    return std::nullopt;
+  }
+
+  // cache hit!
+  // update lru
+  this->updateLRU(key);
+  std::vector<DnsRecord> records;
+  for (auto &entry : it->second) {
+    entry.hitCount++;
+
+    DnsRecord recordCopy = entry.record;
+    uint32_t remainingTTL = entry.remainingTTL();
+
+    std::visit([remainingTTL](auto &r) { r.ttl = remainingTTL; }, recordCopy);
+
+    records.push_back(recordCopy);
+  }
+
+  stats.hits++;
+  return records;
+}
+
+inline void DnsCache::insert(const std::string &qname, QueryType qtype,
+                             const std::vector<DnsRecord> &records) {
+  if (records.empty()) {
+    return;
+  }
+
+  std::string key = this->makeCacheKey(qname, qtype);
+  auto now = std::chrono::steady_clock::now();
+
+  std::vector<CacheEntry> entries;
+  for (const auto &record : records) {
+    uint32_t ttl = this->extractTTL(record);
+    uint32_t enforcedTTL = this->enforceTTLBounds(ttl);
+
+    // skip if ttl is 0
+    if (enforcedTTL == 0) {
+      continue;
+    }
+
+    CacheEntry entry;
+    entry.record = record;
+    entry.insertedAt = now;
+    entry.expiresAt = now + std::chrono::seconds(enforcedTTL);
+    entry.originalTTL = enforcedTTL;
+    entry.hitCount = 0;
+
+    entries.push_back(entry);
+  }
+
+  while (this->cache.size() >= this->maxEntries && !this->cache.empty()) {
+    evictLRU();
+  }
+
+  if (!entries.empty()) {
+    cache[key] = std::move(entries);
+    stats.inserts++;
+    stats.currentEntries += entries.size();
+    this->updateLRU(key);
+  }
+}
+
+inline void DnsCache::cleanupExpired() {
+  for (auto it = cache.begin(); it != cache.end();) {
+    this->removeExpiredEntries(it->second);
+    if (it->second.empty()) {
+      auto node = this->lruMap.find(it->first);
+
+      // Remove if the key exists
+      if (node != this->lruMap.end()) {
+        this->lruList.erase(node->second);
+      }
+
+      this->lruMap.erase(it->first);
+      it = cache.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+inline const CacheStats &DnsCache::getStats() const { return this->stats; }
+
+inline void DnsCache::printStats() const { stats.print(); }
+
+#endif // DNS_CACHE_HPP

@@ -15,6 +15,7 @@
 #include "QueryType.hpp"
 #include "ResultCode.hpp"
 #include "StringUtils.hpp"
+#include "cache/DnsCache.hpp"
 
 struct Server {
   std::array<uint8_t, 4> s_addr;
@@ -73,7 +74,21 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype,
   return resPacket;
 }
 
-inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype) {
+inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
+                                 DnsCache &cache) {
+  // check cache
+  auto cached = cache.lookup(qname, qtype);
+  if (cached.has_value()) {
+    std::cout << "Cache HIT: " << qname << std::endl;
+
+    DnsPacket response;
+    response.answers = *cached;
+    response.header.rescode = ResultCode::NOERROR;
+    return response;
+  }
+
+  std::cout << "Cache MISS: " << qname << std::endl;
+
   // we'll always start with *a.root-servers.net*
   auto ns = stringutils::parseIpv4("198.41.0.4");
 
@@ -89,6 +104,7 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype) {
     // if entries in answer section and no errors we are done
     if (!response.answers.empty() &&
         response.header.rescode == ResultCode::NOERROR) {
+      cache.insert(qname, qtype, response.answers);
       return response;
     }
 
@@ -111,7 +127,7 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype) {
 
     std::string newNsName = *unresolvedNs;
 
-    DnsPacket recursiveResponse = recursiveLookup(newNsName, A{});
+    DnsPacket recursiveResponse = recursiveLookup(newNsName, A{}, cache);
 
     auto newNs = recursiveResponse.getRandomA();
     if (newNs.has_value()) {
@@ -123,7 +139,7 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype) {
   }
 }
 
-inline void handleQuery(int sockfd) {
+inline void handleQuery(int sockfd, DnsCache &cache) {
   // we receive a query
   BytePacketBuffer reqBuffer;
   struct sockaddr_in srcAddr;
@@ -154,7 +170,7 @@ inline void handleQuery(int sockfd) {
 
     // forward query and handle response
     try {
-      DnsPacket result = recursiveLookup(question.name, question.qtype);
+      DnsPacket result = recursiveLookup(question.name, question.qtype, cache);
 
       response.questions.push_back(question);
       response.header.rescode = result.header.rescode;
