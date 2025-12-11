@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <list>
 #include <optional>
 #include <shared_mutex>
@@ -28,8 +29,10 @@ private:
   mutable std::shared_mutex mtx;
 
   // thread mgmt
-  std::thread cleanupThread;
+  std::jthread cleanupThread;
   std::atomic<bool> _thread__cleanup_running{false};
+  std::condition_variable cv;
+  std::mutex cvMtx;
 
   // cleanup loop
   void _thread__cleanup();
@@ -79,7 +82,7 @@ public:
     }
 
     this->_thread__cleanup_running = true;
-    this->cleanupThread = std::thread(&DnsCache::_thread__cleanup, this);
+    this->cleanupThread = std::jthread(&DnsCache::_thread__cleanup, this);
     std::cout << "[Cache] Cleanup thread started" << std::endl;
   }
 
@@ -90,6 +93,7 @@ public:
     }
 
     this->_thread__cleanup_running = false;
+    cv.notify_all();
     if (this->cleanupThread.joinable()) {
       this->cleanupThread.join();
     }
@@ -124,9 +128,9 @@ public:
 
 inline void DnsCache::_thread__cleanup() {
   while (this->_thread__cleanup_running) {
-    // sleep for 60 sec
-    std::this_thread::sleep_for(std::chrono::seconds(60));
-
+    std::unique_lock<std::mutex> lock(cvMtx);
+    cv.wait_for(lock, std::chrono::seconds(60),
+                [this]() { return !this->_thread__cleanup_running; });
     if (!this->_thread__cleanup_running) {
       break;
     }

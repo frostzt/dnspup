@@ -3,6 +3,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 
 #include "DnsCache.hpp"
@@ -10,8 +12,10 @@
 class StatsLogger {
 private:
   // thread mgmt
-  std::thread loggerThread;
+  std::jthread loggerThread;
   std::atomic<bool> _thread__running{false};
+  std::condition_variable cv;
+  std::mutex cvMtx;
 
   DnsCache &dnsCache;
   size_t interval;
@@ -30,7 +34,7 @@ public:
     }
 
     this->_thread__running = true;
-    this->loggerThread = std::thread(&StatsLogger::printStats, this);
+    this->loggerThread = std::jthread(&StatsLogger::printStats, this);
     std::cout << "[StatsLogger] Stats Logger thread started" << std::endl;
   }
 
@@ -40,6 +44,7 @@ public:
     }
 
     this->_thread__running = false;
+    cv.notify_all();
     if (this->loggerThread.joinable()) {
       this->loggerThread.join();
     }
@@ -50,7 +55,10 @@ public:
 
 inline void StatsLogger::printStats() {
   while (this->_thread__running) {
-    std::this_thread::sleep_for(std::chrono::seconds(this->interval));
+    std::unique_lock<std::mutex> lock(cvMtx);
+    cv.wait_for(lock, std::chrono::seconds(this->interval),
+                [this]() { return !this->_thread__running; });
+
     if (!this->_thread__running) {
       break;
     }
