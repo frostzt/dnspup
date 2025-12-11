@@ -81,8 +81,14 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
   if (cached.has_value()) {
     std::cout << "Cache HIT: " << qname << std::endl;
     DnsPacket response;
-    response.answers = *cached;
-    response.header.rescode = ResultCode::NOERROR;
+
+    if (cached->empty()) {
+      response.header.rescode = ResultCode::NXDOMAIN;
+    } else {
+      response.answers = *cached;
+      response.header.rescode = ResultCode::NOERROR;
+    }
+
     return response;
   }
 
@@ -132,6 +138,13 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
 
     // exit if NXDOMAIN
     if (response.header.rescode == ResultCode::NXDOMAIN) {
+      cache.insertNegative(qname, qtype, ResultCode::NXDOMAIN, 300);
+      return response;
+    }
+
+    // exit if SERVFAIL
+    if (response.header.rescode == ResultCode::SERVFAIL) {
+      cache.insertNegative(qname, qtype, ResultCode::SERVFAIL, 300);
       return response;
     }
 

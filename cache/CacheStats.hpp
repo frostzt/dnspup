@@ -28,6 +28,11 @@ struct CacheStats {
   uint64_t nsMisses = 0;
   uint64_t nsInserts = 0;
 
+  // -ve cache
+  uint64_t negHits = 0;
+  uint64_t negMisses = 0;
+  uint64_t negInserts = 0;
+
   size_t currentEntries = 0;
   size_t maxEntries = 0;
 

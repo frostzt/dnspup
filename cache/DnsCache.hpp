@@ -24,6 +24,7 @@ private:
   // Storage: map<cacheKey, vector<CacheEntry>>
   std::unordered_map<std::string, std::vector<CacheEntry>> cache;
   std::unordered_map<std::string, NSCacheEntry> nsCache;
+  std::unordered_map<std::string, NegativeCacheEntry> negativeCache;
 
   // config
   uint32_t minTTL = 60;
@@ -65,6 +66,8 @@ public:
               const std::vector<DnsRecord> &records);
   void insertNS(const std::string &domain, const std::array<uint8_t, 4> &ip,
                 uint32_t ttl);
+  void insertNegative(const std::string &qname, QueryType qtype,
+                      ResultCode rescode, uint32_t ttl);
 
   // Manual cleanup
   void cleanupExpired();
@@ -156,6 +159,18 @@ inline std::optional<std::vector<DnsRecord>>
 DnsCache::lookup(const std::string &qname, QueryType qtype) {
   const std::string key = this->makeCacheKey(qname, qtype);
 
+  // perform lookup on -ve cache
+  auto negIt = this->negativeCache.find(key);
+  if (negIt != this->negativeCache.end()) {
+    if (!negIt->second.isExpired()) {
+      this->stats.negHits++;
+      return std::vector<DnsRecord>{}; // empty to signal cached negative
+                                       // response
+    }
+    negativeCache.erase(negIt);
+  }
+
+  // perform lookup on cache
   auto it = this->cache.find(key);
   if (it == this->cache.end()) {
     // cache miss
@@ -281,6 +296,25 @@ inline void DnsCache::insertNS(const std::string &domain,
   this->stats.nsInserts++;
 }
 
+inline void DnsCache::insertNegative(const std::string &qname, QueryType qtype,
+                                     ResultCode rescode, uint32_t ttl) {
+  uint32_t enforcedTTL = std::min(ttl, 600u);
+  enforcedTTL = std::max(enforcedTTL, 60u);
+
+  std::string key = this->makeCacheKey(qname, qtype);
+  auto now = std::chrono::steady_clock::now();
+
+  NegativeCacheEntry entry;
+  entry.resCode = rescode;
+  entry.insertedAt = now;
+  entry.expiresAt = now + std::chrono::seconds(enforcedTTL);
+  entry.originalTTL = enforcedTTL;
+  entry.hitCount = 0;
+
+  negativeCache[key] = entry;
+  this->stats.negInserts++;
+}
+
 inline void DnsCache::cleanupExpired() {
   for (auto it = cache.begin(); it != cache.end();) {
     this->removeExpiredEntries(it->second);
@@ -299,9 +333,19 @@ inline void DnsCache::cleanupExpired() {
     }
   }
 
+  // Cleanup NS Cache
   for (auto it = nsCache.begin(); it != nsCache.end();) {
     if (it->second.isExpired()) {
       it = nsCache.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  // Cleanup -tive Cache
+  for (auto it = negativeCache.begin(); it != negativeCache.end();) {
+    if (it->second.isExpired()) {
+      it = negativeCache.erase(it);
     } else {
       ++it;
     }

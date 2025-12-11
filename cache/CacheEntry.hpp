@@ -11,7 +11,13 @@
 #include <iostream>
 
 #include "../DnsRecord.hpp"
+#include "../ResultCode.hpp"
 
+/**
+ * CacheEntry represents a cache entry that supports all the general
+ * querytype ie. A, AAAA, CNAME and other set of records supported by
+ * Dnspup
+ **/
 struct CacheEntry {
   // the actual dns record
   DnsRecord record;
@@ -55,6 +61,10 @@ inline uint32_t CacheEntry::remainingTTL() const {
   return ttlSeconds;
 }
 
+/**
+ * NSCacheEntry represents a cache entry that stores all the Nameserver queries
+ * and the data we recieve while we perform nameserver lookups
+ **/
 struct NSCacheEntry {
   // store ip address
   std::array<uint8_t, 4> ip;
@@ -91,6 +101,30 @@ inline uint32_t NSCacheEntry::remainingTTL() const {
   uint32_t ttlSeconds =
       std::chrono::duration_cast<std::chrono::seconds>(remaining).count();
   return ttlSeconds;
+}
+
+/**
+ * NegativeCacheEntry represents a cache entry that stores all the queries
+ * that failed to resolve due to either a NXDOMAIN or SERVFAIL
+ **/
+struct NegativeCacheEntry {
+  // store ip address
+  ResultCode resCode;
+
+  std::chrono::time_point<std::chrono::steady_clock> insertedAt;
+  std::chrono::time_point<std::chrono::steady_clock> expiresAt;
+  uint32_t originalTTL;
+  uint32_t hitCount;
+
+  /**
+   * Returns true if `this` cache entry is expired
+   **/
+  bool isExpired() const;
+};
+
+inline bool NegativeCacheEntry::isExpired() const {
+  auto now = std::chrono::steady_clock::now();
+  return now >= this->expiresAt;
 }
 
 #endif // CACHE_ENTRY_HPP
