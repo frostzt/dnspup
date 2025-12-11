@@ -1,4 +1,6 @@
 #include <arpa/inet.h>
+#include <atomic>
+#include <csignal>
 #include <cstring>
 #include <exception>
 #include <iostream>
@@ -9,8 +11,18 @@
 #include "Core.hpp"
 #include "cache/StatsLogger.hpp"
 
+std::atomic<bool> g_shutdown_requested{false};
+
+void signalHandler(int signum) {
+  std::cout << "\nShutdown signal received (" << signum << ")" << std::endl;
+  g_shutdown_requested = true;
+}
+
 int main() {
   try {
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
+
     // bind udp socket to 2053
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -30,6 +42,14 @@ int main() {
       return 1;
     }
 
+    struct timeval tv;
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
+
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+      std::cerr << "Warning: Failed to set socket timeout" << std::endl;
+    }
+
     // create cache
     DnsCache cache(60, 86400); // runs every minute
     cache.startCleanup();
@@ -42,7 +62,7 @@ int main() {
     std::cout << "Press Ctrl+C to shutdown" << std::endl;
 
     // handle queries
-    while (true) {
+    while (!g_shutdown_requested) {
       try {
         handleQuery(sockfd, cache);
       } catch (const std::exception &e) {

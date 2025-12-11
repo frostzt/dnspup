@@ -2,6 +2,7 @@
 #define CORE_DNS_HPP
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstring>
 #include <netinet/in.h>
 #include <stdexcept>
@@ -200,6 +201,11 @@ inline void handleQuery(int sockfd, DnsCache &cache) {
   ssize_t bytesReceived = recvfrom(sockfd, reqBuffer.buf, 512, 0,
                                    (struct sockaddr *)&srcAddr, &srcAddrLen);
   if (bytesReceived < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return; // timeout -- just return, main loop will handle the shutdown
+              // thingy
+    }
+
     throw std::runtime_error("failed to receive packet");
   }
 
