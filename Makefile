@@ -1,10 +1,12 @@
 CXX = clang++
-CXXFLAGS = -std=c++20 -Wall -Wextra -g -O0
-TARGET = bin/dns_resolver
+CXXFLAGS = -std=c++20 -Wall -Wextra -g -O0 -I .
+TARGET = bin/dnspup
+
+HEADERS = $(shell find . -name '*.hpp')
 
 all: $(TARGET)
 
-$(TARGET): main.cpp *.hpp
+$(TARGET): main.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) main.cpp -o $(TARGET)
 
 clean:
