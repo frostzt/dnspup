@@ -8,10 +8,13 @@
 #define DNS_CACHE_HPP
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <list>
 #include <optional>
+#include <shared_mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -21,6 +24,16 @@
 
 class DnsCache {
 private:
+  // reader-writer lock
+  mutable std::shared_mutex mtx;
+
+  // thread mgmt
+  std::thread cleanupThread;
+  std::atomic<bool> _thread__cleanup_running{false};
+
+  // cleanup loop
+  void _thread__cleanup();
+
   // Storage: map<cacheKey, vector<CacheEntry>>
   std::unordered_map<std::string, std::vector<CacheEntry>> cache;
   std::unordered_map<std::string, NSCacheEntry> nsCache;
@@ -56,6 +69,34 @@ public:
   DnsCache(uint32_t minTTL_ = 60, uint32_t maxTTL_ = 86400)
       : minTTL(minTTL_), maxTTL(maxTTL_) {}
 
+  // stop the thread
+  ~DnsCache() { this->stopCleanup(); }
+
+  // start the cleanup thread
+  void startCleanup() {
+    if (this->_thread__cleanup_running) {
+      return;
+    }
+
+    this->_thread__cleanup_running = true;
+    this->cleanupThread = std::thread(&DnsCache::_thread__cleanup, this);
+    std::cout << "[Cache] Cleanup thread started" << std::endl;
+  }
+
+  // stop the cleanup thread
+  void stopCleanup() {
+    if (!this->_thread__cleanup_running) {
+      return;
+    }
+
+    this->_thread__cleanup_running = false;
+    if (this->cleanupThread.joinable()) {
+      this->cleanupThread.join();
+    }
+
+    std::cout << "[Cache] Cleanup thread stopped" << std::endl;
+  }
+
   // Lookup cache records
   std::optional<std::vector<DnsRecord>> lookup(const std::string &qname,
                                                QueryType qtype);
@@ -80,6 +121,23 @@ public:
   void evictLRU();
   void updateLRU(const std::string &key);
 };
+
+inline void DnsCache::_thread__cleanup() {
+  while (this->_thread__cleanup_running) {
+    // sleep for 60 sec
+    std::this_thread::sleep_for(std::chrono::seconds(60));
+
+    if (!this->_thread__cleanup_running) {
+      break;
+    }
+
+    // clean up expired entries
+    this->cleanupExpired();
+
+    std::cout << "[Cache] Cleanup Completed. "
+              << "Current entries: " << this->cache.size() << std::endl;
+  }
+}
 
 inline void DnsCache::updateLRU(const std::string &key) {
   auto node = this->lruMap.find(key);
@@ -157,6 +215,8 @@ inline uint32_t DnsCache::extractTTL(const DnsRecord &record) {
 
 inline std::optional<std::vector<DnsRecord>>
 DnsCache::lookup(const std::string &qname, QueryType qtype) {
+  std::shared_lock<std::shared_mutex> lock(this->mtx);
+
   const std::string key = this->makeCacheKey(qname, qtype);
 
   // perform lookup on -ve cache
@@ -209,6 +269,8 @@ DnsCache::lookup(const std::string &qname, QueryType qtype) {
 
 inline std::optional<std::array<uint8_t, 4>>
 DnsCache::lookupNS(const std::string &domain) {
+  std::shared_lock<std::shared_mutex> lock(this->mtx);
+
   auto it = this->nsCache.find(domain);
   if (it == this->nsCache.end()) {
     // ns cache miss
@@ -233,6 +295,8 @@ DnsCache::lookupNS(const std::string &domain) {
 
 inline void DnsCache::insert(const std::string &qname, QueryType qtype,
                              const std::vector<DnsRecord> &records) {
+  std::unique_lock<std::shared_mutex> lock(this->mtx);
+
   if (records.empty()) {
     return;
   }
@@ -274,6 +338,8 @@ inline void DnsCache::insert(const std::string &qname, QueryType qtype,
 
 inline void DnsCache::insertNS(const std::string &domain,
                                const std::array<uint8_t, 4> &ip, uint32_t ttl) {
+  std::unique_lock<std::shared_mutex> lock(this->mtx);
+
   uint32_t enforcedTTL = this->enforceTTLBounds(ttl);
   if (enforcedTTL == 0) {
     return;
@@ -298,6 +364,8 @@ inline void DnsCache::insertNS(const std::string &domain,
 
 inline void DnsCache::insertNegative(const std::string &qname, QueryType qtype,
                                      ResultCode rescode, uint32_t ttl) {
+  std::unique_lock<std::shared_mutex> lock(this->mtx);
+
   uint32_t enforcedTTL = std::min(ttl, 600u);
   enforcedTTL = std::max(enforcedTTL, 60u);
 
@@ -316,6 +384,8 @@ inline void DnsCache::insertNegative(const std::string &qname, QueryType qtype,
 }
 
 inline void DnsCache::cleanupExpired() {
+  std::unique_lock<std::shared_mutex> lock(this->mtx);
+
   for (auto it = cache.begin(); it != cache.end();) {
     this->removeExpiredEntries(it->second);
     if (it->second.empty()) {
@@ -352,7 +422,10 @@ inline void DnsCache::cleanupExpired() {
   }
 }
 
-inline const CacheStats &DnsCache::getStats() const { return this->stats; }
+inline const CacheStats &DnsCache::getStats() const {
+  std::shared_lock<std::shared_mutex> lock(this->mtx);
+  return this->stats;
+}
 
 inline void DnsCache::printStats() const { stats.print(); }
 

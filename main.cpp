@@ -7,12 +7,10 @@
 #include <unistd.h>
 
 #include "Core.hpp"
+#include "cache/StatsLogger.hpp"
 
 int main() {
   try {
-    // create cache
-    DnsCache cache(60, 86400);
-
     // bind udp socket to 2053
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -32,7 +30,16 @@ int main() {
       return 1;
     }
 
+    // create cache
+    DnsCache cache(60, 86400); // runs every minute
+    cache.startCleanup();
+
+    StatsLogger cacheStatsLogger(120, cache); // runs every 2 mins
+    cacheStatsLogger.startLogger();
+
     std::cout << "DNS Server listening on 0.0.0.0:2053" << std::endl;
+    std::cout << "Background threads started" << std::endl;
+    std::cout << "Press Ctrl+C to shutdown" << std::endl;
 
     // handle queries
     while (true) {
@@ -46,6 +53,10 @@ int main() {
     // stats
     std::cout << "\nShutting down...\n";
     cache.printStats();
+
+    // cleanup
+    cache.stopCleanup();
+    cacheStatsLogger.stopLogger();
 
     close(sockfd);
   } catch (const std::exception &e) {

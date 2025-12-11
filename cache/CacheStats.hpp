@@ -8,6 +8,7 @@
 #define CACHE_STATS_HPP
 
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 
 /**
@@ -47,6 +48,11 @@ struct CacheStats {
   double nsHitRate() const;
 
   /**
+   * Calculate -ve cache hit rate as a percentage
+   **/
+  double negHitRate() const;
+
+  /**
    * Print cache statistics to stdout
    **/
   void print() const;
@@ -69,6 +75,13 @@ inline double CacheStats::nsHitRate() const {
   if (total == 0)
     return 0.0;
   return (static_cast<double>(nsHits) / total) * 100.0;
+}
+
+inline double CacheStats::negHitRate() const {
+  uint64_t total = negHits + negMisses;
+  if (total == 0)
+    return 0.0;
+  return (static_cast<double>(negHits) / total) * 100.0;
 }
 
 inline void CacheStats::reset() {
@@ -95,6 +108,12 @@ inline void CacheStats::print() const {
   std::cout << "NS Misses: " << nsMisses << "\n";
   std::cout << "NS Inserts: " << nsInserts << "\n";
   std::cout << "NS Hit Rate: " << nsHitRate() << "%\n";
+  std::cout << "\n--- Negative Cache ---\n";
+  std::cout << "Negative Hits: " << negHits << "\n";
+  std::cout << "Negative Misses: " << negMisses << "\n";
+  std::cout << "Negative Inserts: " << negInserts << "\n";
+  std::cout << "Negative Hit Rate: " << std::fixed << std::setprecision(2)
+            << negHitRate() << "%\n";
   std::cout << "========================\n\n";
 }
 
