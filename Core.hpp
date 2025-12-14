@@ -17,14 +17,16 @@
 #include "ResultCode.hpp"
 #include "StringUtils.hpp"
 #include "cache/DnsCache.hpp"
+#include "config/NetworkConfig.hpp"
+#include "errors/errors.hpp"
 
 struct Server {
   std::array<uint8_t, 4> s_addr;
   uint16_t s_port;
 };
 
-inline DnsPacket lookup(std::string &qname, QueryType qtype,
-                        Server serverConf) {
+inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
+                        NetworkConfig config = NetworkConfig{}) {
   // create udp socket
   int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 
@@ -37,6 +39,20 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype,
       0) {
     close(sockfd);
     throw std::runtime_error("udp socket failed to bind");
+  }
+
+  // set timeout for socket
+  struct timeval tv;
+  tv.tv_sec = config.recvTimeoutMs / 1000;
+  tv.tv_usec = (config.recvTimeoutMs % 1000) * 1000;
+  if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+    std::cerr << "Warning: failed to set socket send timeout" << std::endl;
+  }
+
+  tv.tv_sec = config.sendTimeoutMs / 1000;
+  tv.tv_usec = (config.sendTimeoutMs % 1000) * 1000;
+  if (setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+    std::cerr << "Warning: failed to set socket send timeout" << std::endl;
   }
 
   // build a dns packet
@@ -66,7 +82,15 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype,
 
   // receive response
   BytePacketBuffer resBuffer;
-  recvfrom(sockfd, resBuffer.buf, 512, 0, nullptr, nullptr);
+  ssize_t bytesRecv = recvfrom(sockfd, resBuffer.buf, 512, 0, nullptr, nullptr);
+  if (bytesRecv < 0) {
+    close(sockfd);
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      throw TimeoutException("DNS query timed out");
+    }
+    throw std::runtime_error("recvfrom failed: " +
+                             std::string(strerror(errno)));
+  }
 
   // parse and print
   DnsPacket resPacket = DnsPacket::fromBuffer(resBuffer);
@@ -198,6 +222,7 @@ inline void handleQuery(int sockfd, DnsCache &cache) {
   struct sockaddr_in srcAddr;
   socklen_t srcAddrLen = sizeof(srcAddr);
 
+  // receive data from the socket into the buffer
   ssize_t bytesReceived = recvfrom(sockfd, reqBuffer.buf, 512, 0,
                                    (struct sockaddr *)&srcAddr, &srcAddrLen);
   if (bytesReceived < 0) {

@@ -10,6 +10,7 @@
 
 #include "Core.hpp"
 #include "cache/StatsLogger.hpp"
+#include "config/NetworkConfig.hpp"
 
 std::atomic<bool> g_shutdown_requested{false};
 
@@ -46,6 +47,7 @@ int main() {
     tv.tv_sec = 1;
     tv.tv_usec = 0;
 
+    // Set socket recieve timeout
     if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
       std::cerr << "Warning: Failed to set socket timeout" << std::endl;
     }
