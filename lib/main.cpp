@@ -24,6 +24,9 @@ int main() {
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
 
+    // create network config
+    NetworkConfig networkConfig;
+
     // bind udp socket to 2053
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -66,7 +69,7 @@ int main() {
     // handle queries
     while (!g_shutdown_requested) {
       try {
-        handleQuery(sockfd, cache);
+        handleQuery(sockfd, cache, networkConfig);
       } catch (const std::exception &e) {
         std::cerr << "An exception occured: " << e.what() << std::endl;
       }

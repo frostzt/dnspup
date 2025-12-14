@@ -3,6 +3,7 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <netinet/in.h>
 #include <stdexcept>
@@ -15,6 +16,8 @@
 #include "DnsQuestion.hpp"
 #include "QueryType.hpp"
 #include "ResultCode.hpp"
+#include "RetryPolicy.hpp"
+#include "RootServers.hpp"
 #include "StringUtils.hpp"
 #include "cache/DnsCache.hpp"
 #include "config/NetworkConfig.hpp"
@@ -100,7 +103,7 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
 }
 
 inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
-                                 DnsCache &cache) {
+                                 DnsCache &cache, NetworkConfig &netConf) {
   // check main cache
   auto cached = cache.lookup(qname, qtype);
   if (cached.has_value()) {
@@ -138,85 +141,123 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
     domain = domain.substr(dot + 1);
   }
 
-  // if no cached ns found start from root
-  if (!ns.has_value()) {
-    // we'll always start with *a.root-servers.net*
-    ns = stringutils::parseIpv4("198.41.0.4");
-    std::cout << "Starting from root server" << std::endl;
-  }
+  bool prevNSTimedOut = false;
 
-  while (true) {
-    std::cout << "attempting lookup of " << fromQueryTypeToNumber(qtype) << " "
-              << qname << " with ns " << stringutils::ipv4ToString(*ns) << "\n";
-
-    auto nscopy = *ns;
-
-    Server server{nscopy, 53};
-    auto response = lookup(qname, qtype, server);
-
-    // if entries in answer section and no errors we are done
-    if (!response.answers.empty() &&
-        response.header.rescode == ResultCode::NOERROR) {
-      cache.insert(qname, qtype, response.answers);
-      return response;
+  // loop and try every possible root server
+  for (auto &rs : RootServerRepository::servers) {
+    // if no cached ns found start from root
+    if (!ns.has_value() || prevNSTimedOut) {
+      // pick a root server
+      ns = rs.ipv4address;
+      std::cout << "=== Using root server: " << rs.hostname << " ("
+                << stringutils::ipv4ToString(rs.ipv4address) << ")"
+                << " [hits: " << rs.hits << ", timeouts: " << rs.timeoutCounts
+                << "]" << std::endl;
     }
 
-    // exit if NXDOMAIN
-    if (response.header.rescode == ResultCode::NXDOMAIN) {
-      cache.insertNegative(qname, qtype, ResultCode::NXDOMAIN, 300);
-      return response;
-    }
+    while (true) {
+      std::cout << "attempting lookup of " << fromQueryTypeToNumber(qtype)
+                << " " << qname << " with ns " << stringutils::ipv4ToString(*ns)
+                << "\n";
 
-    // exit if SERVFAIL
-    if (response.header.rescode == ResultCode::SERVFAIL) {
-      cache.insertNegative(qname, qtype, ResultCode::SERVFAIL, 300);
-      return response;
-    }
+      auto nscopy = *ns;
 
-    // cache NS records from authority section
-    auto nameservers = response.getNs(qname);
-    for (const auto &[domain, host] : nameservers) {
-      // look for glue records (a records for ns in addtional section)
-      for (const auto &resource : response.resources) {
-        if (auto *arecord = std::get_if<ARecord>(&resource)) {
-          if (arecord->domain == host) {
-            // cache this ns
-            std::string domainStr(domain);
-            cache.insertNS(domainStr, arecord->addr, arecord->ttl);
-            std::cout << "Cached NS: " << domainStr << " -> "
-                      << stringutils::ipv4ToString(arecord->addr) << std::endl;
+      Server server{nscopy, 53};
+
+      // start counter for tracking latency
+      auto start = std::chrono::steady_clock::now();
+
+      RetryPolicy retry{NetworkConfig{}};
+      DnsPacket response;
+      try {
+        response =
+            retry.executeWithRetry([&qname, &qtype, &server, &netConf]() {
+              return lookup(qname, qtype, server, netConf);
+            });
+
+        auto end = std::chrono::steady_clock::now();
+        auto latency =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+                .count();
+
+        rs.avgLatency = (rs.avgLatency * rs.hits + latency) / (rs.hits + 1);
+        rs.hits++;
+      } catch (const TimeoutException &e) {
+        rs.timeoutCounts++;
+        std::cerr << "Root server " << rs.hostname << " timed out after retries"
+                  << std::endl;
+	prevNSTimedOut = true;
+        break;
+      }
+
+      // if entries in answer section and no errors we are done
+      if (!response.answers.empty() &&
+          response.header.rescode == ResultCode::NOERROR) {
+        cache.insert(qname, qtype, response.answers);
+        return response;
+      }
+
+      // exit if NXDOMAIN
+      if (response.header.rescode == ResultCode::NXDOMAIN) {
+        cache.insertNegative(qname, qtype, ResultCode::NXDOMAIN, 300);
+        return response;
+      }
+
+      // exit if SERVFAIL
+      if (response.header.rescode == ResultCode::SERVFAIL) {
+        cache.insertNegative(qname, qtype, ResultCode::SERVFAIL, 300);
+        return response;
+      }
+
+      // cache NS records from authority section
+      auto nameservers = response.getNs(qname);
+      for (const auto &[domain, host] : nameservers) {
+        // look for glue records (a records for ns in addtional section)
+        for (const auto &resource : response.resources) {
+          if (auto *arecord = std::get_if<ARecord>(&resource)) {
+            if (arecord->domain == host) {
+              // cache this ns
+              std::string domainStr(domain);
+              cache.insertNS(domainStr, arecord->addr, arecord->ttl);
+              std::cout << "Cached NS: " << domainStr << " -> "
+                        << stringutils::ipv4ToString(arecord->addr)
+                        << std::endl;
+            }
           }
         }
       }
-    }
 
-    auto resolvedNs = response.getResolvedNs(qname);
-    if (resolvedNs.has_value()) {
-      ns = resolvedNs;
-      continue;
-    }
+      auto resolvedNs = response.getResolvedNs(qname);
+      if (resolvedNs.has_value()) {
+        ns = resolvedNs;
+        continue;
+      }
 
-    std::string newNsServer;
-    auto unresolvedNs = response.getUnresolvedNs(qname);
-    if (!unresolvedNs.has_value()) {
-      return response;
-    }
+      std::string newNsServer;
+      auto unresolvedNs = response.getUnresolvedNs(qname);
+      if (!unresolvedNs.has_value()) {
+        return response;
+      }
 
-    std::string newNsName = *unresolvedNs;
+      std::string newNsName = *unresolvedNs;
 
-    DnsPacket recursiveResponse = recursiveLookup(newNsName, A{}, cache);
+      DnsPacket recursiveResponse =
+          recursiveLookup(newNsName, A{}, cache, netConf);
 
-    auto newNs = recursiveResponse.getRandomA();
-    if (newNs.has_value()) {
-      ns = newNs;
-      continue;
-    } else {
-      return response;
+      auto newNs = recursiveResponse.getRandomA();
+      if (newNs.has_value()) {
+        ns = newNs;
+        continue;
+      } else {
+        return response;
+      }
     }
   }
+
+  throw std::runtime_error("all root servers failed");
 }
 
-inline void handleQuery(int sockfd, DnsCache &cache) {
+inline void handleQuery(int sockfd, DnsCache &cache, NetworkConfig &netConf) {
   // we receive a query
   BytePacketBuffer reqBuffer;
   struct sockaddr_in srcAddr;
@@ -253,7 +294,8 @@ inline void handleQuery(int sockfd, DnsCache &cache) {
 
     // forward query and handle response
     try {
-      DnsPacket result = recursiveLookup(question.name, question.qtype, cache);
+      DnsPacket result =
+          recursiveLookup(question.name, question.qtype, cache, netConf);
 
       response.questions.push_back(question);
       response.header.rescode = result.header.rescode;
