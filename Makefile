@@ -4,14 +4,14 @@ CXXFLAGS = -std=c++20 -Wall -Wextra -g -O0 -I .
 TARGET = bin/dnspup
 TEST_TARGET = bin/test_runner
 
-HEADERS = $(shell find . -name '*.hpp')
+HEADERS = $(shell find ./lib/ -name '*.hpp')
 TEST_SOURCES = tests/test_main.cpp
 
 # Main target
 all: $(TARGET)
 
-$(TARGET): main.cpp $(HEADERS)
-	$(CXX) $(CXXFLAGS) main.cpp -o $(TARGET)
+$(TARGET): ./lib/main.cpp $(HEADERS)
+	$(CXX) $(CXXFLAGS) ./lib/main.cpp -o $(TARGET)
 
 # Test Target
 test: $(TEST_TARGET)
