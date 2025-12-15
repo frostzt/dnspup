@@ -1,5 +1,3 @@
-#define CATCH_CONFIG_MAIN
-
 #include "../lib/cache/DnsCache.hpp"
 #include "catch.hpp"
 

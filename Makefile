@@ -5,7 +5,7 @@ TARGET = bin/dnspup
 TEST_TARGET = bin/test_runner
 
 HEADERS = $(shell find ./lib/ -name '*.hpp')
-TEST_SOURCES = tests/test_main.cpp
+TEST_SOURCES = tests/TestMain.cpp tests/TestStringUtils.cpp
 
 # Main target
 all: $(TARGET)
@@ -17,12 +17,13 @@ $(TARGET): ./lib/main.cpp $(HEADERS)
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
-$(TEST_TARGET): tests/test_main.cpp $(HEADERS)
+$(TEST_TARGET): $(TEST_SOURCES) $(HEADERS)
 	mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(TEST_SOURCES) -o $(TEST_TARGET)
 
 clean:
 	rm -f $(TARGET)
+	rm -f $(TEST_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
