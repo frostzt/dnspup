@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <netinet/in.h>
 #include <stdexcept>
@@ -20,15 +21,14 @@
 #include "RootServers.hpp"
 #include "StringUtils.hpp"
 #include "cache/DnsCache.hpp"
+#include "common/ServerConfig.hpp"
 #include "config/NetworkConfig.hpp"
 #include "errors/errors.hpp"
-
-struct Server {
-  std::array<uint8_t, 4> s_addr;
-  uint16_t s_port;
-};
+#include "security/SecurityUtils.hpp"
+#include "tracking/TransactionTracker.hpp"
 
 inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
+                        TransactionTracker &tracker,
                         NetworkConfig config = NetworkConfig{}) {
   // create udp socket
   int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -58,9 +58,15 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
     std::cerr << "Warning: failed to set socket send timeout" << std::endl;
   }
 
+  // generate a new transaction id
+  auto txnId = SecurityUtils::generateTransactionId(tracker);
+
+  // track this transaction
+  tracker.registerTxn(txnId, qname, qtype, serverConf);
+
   // build a dns packet
   DnsPacket packet;
-  packet.header.id = 7857;
+  packet.header.id = txnId;
   packet.header.questions = 1;
   packet.header.recursionDesired = true;
   packet.questions.push_back(DnsQuestion(qname, qtype));
@@ -84,8 +90,11 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
          (struct sockaddr *)&serverAddr, sizeof(serverAddr));
 
   // receive response
+  struct sockaddr_in srcAddr;
+  socklen_t srcAddrLen = sizeof(srcAddr);
   BytePacketBuffer resBuffer;
-  ssize_t bytesRecv = recvfrom(sockfd, resBuffer.buf, 512, 0, nullptr, nullptr);
+  ssize_t bytesRecv = recvfrom(sockfd, resBuffer.buf, 512, 0,
+                               (struct sockaddr *)&srcAddr, &srcAddrLen);
   if (bytesRecv < 0) {
     close(sockfd);
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -98,12 +107,32 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
   // parse and print
   DnsPacket resPacket = DnsPacket::fromBuffer(resBuffer);
 
+  // validate response
+  if (resPacket.header.id != txnId) {
+    throw SecurityException("Transaction ID mismatch! Possible attack!");
+  }
+
+  // validate source and server address and port
+  if (srcAddr.sin_addr.s_addr != serverAddr.sin_addr.s_addr ||
+      srcAddr.sin_port != serverAddr.sin_port) {
+    throw SecurityException("Response from unexpected source!");
+  }
+
+  // validate that we got response instead of a new query
+  if (!resPacket.header.response) {
+    throw SecurityException("Received query instead of response!");
+  }
+
+  // txn succeeded
+  tracker.removeTxn(txnId);
+
   close(sockfd);
   return resPacket;
 }
 
 inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
-                                 DnsCache &cache, NetworkConfig &netConf) {
+                                 DnsCache &cache, NetworkConfig &netConf,
+                                 TransactionTracker &tracker) {
   // check main cache
   auto cached = cache.lookup(qname, qtype);
   if (cached.has_value()) {
@@ -170,9 +199,9 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
       RetryPolicy retry{NetworkConfig{}};
       DnsPacket response;
       try {
-        response =
-            retry.executeWithRetry([&qname, &qtype, &server, &netConf]() {
-              return lookup(qname, qtype, server, netConf);
+        response = retry.executeWithRetry(
+            [&qname, &qtype, &server, &tracker, &netConf]() {
+              return lookup(qname, qtype, server, tracker, netConf);
             });
 
         auto end = std::chrono::steady_clock::now();
@@ -186,7 +215,7 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
         rs.timeoutCounts++;
         std::cerr << "Root server " << rs.hostname << " timed out after retries"
                   << std::endl;
-	prevNSTimedOut = true;
+        prevNSTimedOut = true;
         break;
       }
 
@@ -242,7 +271,7 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
       std::string newNsName = *unresolvedNs;
 
       DnsPacket recursiveResponse =
-          recursiveLookup(newNsName, A{}, cache, netConf);
+          recursiveLookup(newNsName, A{}, cache, netConf, tracker);
 
       auto newNs = recursiveResponse.getRandomA();
       if (newNs.has_value()) {
@@ -257,7 +286,8 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
   throw std::runtime_error("all root servers failed");
 }
 
-inline void handleQuery(int sockfd, DnsCache &cache, NetworkConfig &netConf) {
+inline void handleQuery(int sockfd, DnsCache &cache, NetworkConfig &netConf,
+                        TransactionTracker &tracker) {
   // we receive a query
   BytePacketBuffer reqBuffer;
   struct sockaddr_in srcAddr;
@@ -294,8 +324,8 @@ inline void handleQuery(int sockfd, DnsCache &cache, NetworkConfig &netConf) {
 
     // forward query and handle response
     try {
-      DnsPacket result =
-          recursiveLookup(question.name, question.qtype, cache, netConf);
+      DnsPacket result = recursiveLookup(question.name, question.qtype, cache,
+                                         netConf, tracker);
 
       response.questions.push_back(question);
       response.header.rescode = result.header.rescode;

@@ -11,6 +11,7 @@
 #include "Core.hpp"
 #include "cache/StatsLogger.hpp"
 #include "config/NetworkConfig.hpp"
+#include "tracking/TransactionTracker.hpp"
 
 std::atomic<bool> g_shutdown_requested{false};
 
@@ -62,6 +63,9 @@ int main() {
     StatsLogger cacheStatsLogger(120, cache); // runs every 2 mins
     cacheStatsLogger.startLogger();
 
+    // transaction tracker
+    TransactionTracker tracker;
+
     std::cout << "DNS Server listening on 0.0.0.0:2053" << std::endl;
     std::cout << "Background threads started" << std::endl;
     std::cout << "Press Ctrl+C to shutdown" << std::endl;
@@ -69,7 +73,7 @@ int main() {
     // handle queries
     while (!g_shutdown_requested) {
       try {
-        handleQuery(sockfd, cache, networkConfig);
+        handleQuery(sockfd, cache, networkConfig, tracker);
       } catch (const std::exception &e) {
         std::cerr << "An exception occured: " << e.what() << std::endl;
       }
