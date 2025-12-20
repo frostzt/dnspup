@@ -5,3 +5,9 @@
 /**/dnspup.dSYM
 /**/dnspup
 
+# MacOS BS
+.DS_Store
+
+# Personal document files
+PRODUCTION_ROADMAP.md
+
