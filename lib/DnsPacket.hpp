@@ -1,7 +1,6 @@
 #ifndef DNSPACKET_HPP
 #define DNSPACKET_HPP
 
-#include <algorithm>
 #include <array>
 #include <iostream>
 #include <optional>

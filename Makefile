@@ -17,6 +17,9 @@ $(TARGET): ./lib/main.cpp $(HEADERS)
 test: $(TEST_TARGET)
 	./$(TEST_TARGET) -d yes
 
+debug: clean
+	$(CXX) $(CXXFLAGS) -DDEBUG ./lib/main.cpp -o $(TARGET)
+
 $(TEST_TARGET): $(TEST_SOURCES) $(HEADERS)
 	mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(TEST_SOURCES) -o $(TEST_TARGET)
@@ -35,4 +38,4 @@ integration-test: $(TARGET)
 # Run all tests (unit + integration)
 test-all: test integration-test
 
-.PHONY: all clean run test integration-test test-all
+.PHONY: all clean run test integration-test test-all debug
