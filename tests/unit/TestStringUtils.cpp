@@ -1,4 +1,4 @@
-#include "../lib/StringUtils.hpp"
+#include "../../lib/StringUtils.hpp"
 #include "catch.hpp"
 
 TEST_CASE("StringUtils basic operations", "[SplitString]") {

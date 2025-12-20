@@ -28,4 +28,11 @@ clean:
 run: $(TARGET)
 	./$(TARGET)
 
-.PHONY: all clean run
+# Integration tests (Python/pytest)
+integration-test: $(TARGET)
+	cd tests/integration && python3 -m pytest -v
+
+# Run all tests (unit + integration)
+test-all: test integration-test
+
+.PHONY: all clean run test integration-test test-all

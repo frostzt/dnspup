@@ -1,4 +1,4 @@
-#include "../lib/cache/DnsCache.hpp"
+#include "../../lib/cache/DnsCache.hpp"
 #include "catch.hpp"
 
 TEST_CASE("DnsCache basic operations", "[cache]") {

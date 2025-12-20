@@ -1,7 +1,6 @@
 #ifndef SECURITY_UTILS_HPP
 #define SECURITY_UTILS_HPP
 
-#include <chrono>
 #include <cstdint>
 #include <random>
 #include <stdexcept>
