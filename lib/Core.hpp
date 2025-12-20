@@ -11,6 +11,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <unordered_set>
 
 #include "BytePacketBuffer.hpp"
 #include "DnsPacket.hpp"
@@ -26,6 +27,9 @@
 #include "errors/errors.hpp"
 #include "security/SecurityUtils.hpp"
 #include "tracking/TransactionTracker.hpp"
+
+// Max recursion depth allowed in recursive queries
+const size_t MAX_RECURSION_DEPTH = 10;
 
 inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
                         TransactionTracker &tracker,
@@ -130,9 +134,35 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
   return resPacket;
 }
 
-inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
-                                 DnsCache &cache, NetworkConfig &netConf,
-                                 TransactionTracker &tracker) {
+inline DnsPacket
+recursiveLookup(std::string &qname, QueryType qtype, DnsCache &cache,
+                NetworkConfig &netConf, TransactionTracker &tracker,
+                size_t depth = 0,
+                std::unordered_set<std::string> *visited = nullptr) {
+  // init a set to track domains we're visiting
+  std::unordered_set<std::string> visitedSet;
+  if (visited == nullptr) {
+    visited = &visitedSet;
+  }
+
+  if (visited->count(qname) > 0) {
+    std::cerr << "Circular reference detected: " << qname << std::endl;
+    DnsPacket error_response;
+    error_response.header.rescode = ResultCode::SERVFAIL;
+    return error_response;
+  }
+
+  visited->insert(qname);
+
+  // if we exceed maximum depth we'll return out
+  if (depth >= MAX_RECURSION_DEPTH) {
+    std::cerr << "Max recursion depth (" << MAX_RECURSION_DEPTH
+              << ") exceeded for " << qname << std::endl;
+    DnsPacket error_response;
+    error_response.header.rescode = ResultCode::SERVFAIL;
+    return error_response;
+  }
+
   // check main cache
   auto cached = cache.lookup(qname, qtype);
   if (cached.has_value()) {
@@ -169,6 +199,8 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
     }
     domain = domain.substr(dot + 1);
   }
+
+  std::cout << "[Depth " << depth << "] Looking up " << qname << std::endl;
 
   bool prevNSTimedOut = false;
 
@@ -270,8 +302,8 @@ inline DnsPacket recursiveLookup(std::string &qname, QueryType qtype,
 
       std::string newNsName = *unresolvedNs;
 
-      DnsPacket recursiveResponse =
-          recursiveLookup(newNsName, A{}, cache, netConf, tracker);
+      DnsPacket recursiveResponse = recursiveLookup(
+          newNsName, A{}, cache, netConf, tracker, depth + 1, visited);
 
       auto newNs = recursiveResponse.getRandomA();
       if (newNs.has_value()) {

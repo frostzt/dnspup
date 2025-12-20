@@ -207,6 +207,10 @@ inline DnsRecord readDnsRecord(BytePacketBuffer &buffer) {
   uint32_t ttl = *buffer.readU32();
   uint16_t dataLength = *buffer.readU16();
 
+#ifdef DEBUG
+  std::cout << "[DEBUG] QueryType: " << qtypeNum << std::endl;
+#endif
+
   return std::visit(
       [&](auto &&arg) -> DnsRecord {
         using T = std::decay_t<decltype(arg)>;
