@@ -11,6 +11,7 @@
 #include "Core.hpp"
 #include "cache/StatsLogger.hpp"
 #include "config/NetworkConfig.hpp"
+#include "security/RateLimiter.hpp"
 #include "tracking/TransactionTracker.hpp"
 
 std::atomic<bool> g_shutdown_requested{false};
@@ -66,6 +67,12 @@ int main() {
     // transaction tracker
     TransactionTracker tracker;
 
+    // create rate limiter
+    RateLimitConfig rateLimiterCfg;
+    rateLimiterCfg.maxQueriesPerWindow = 250;
+    rateLimiterCfg.windowSeconds = 1;
+    RateLimiter rateLimiter{rateLimiterCfg};
+
     std::cout << "DNS Server listening on 0.0.0.0:2053" << std::endl;
     std::cout << "Background threads started" << std::endl;
     std::cout << "Press Ctrl+C to shutdown" << std::endl;
@@ -73,7 +80,7 @@ int main() {
     // handle queries
     while (!g_shutdown_requested) {
       try {
-        handleQuery(sockfd, cache, networkConfig, tracker);
+        handleQuery(sockfd, cache, networkConfig, tracker, rateLimiter);
       } catch (const std::exception &e) {
         std::cerr << "An exception occured: " << e.what() << std::endl;
       }

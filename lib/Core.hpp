@@ -25,6 +25,7 @@
 #include "common/ServerConfig.hpp"
 #include "config/NetworkConfig.hpp"
 #include "errors/errors.hpp"
+#include "security/RateLimiter.hpp"
 #include "security/SecurityUtils.hpp"
 #include "tracking/TransactionTracker.hpp"
 
@@ -41,7 +42,7 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
   struct sockaddr_in local_addr;
   local_addr.sin_family = AF_INET;
   local_addr.sin_addr.s_addr = INADDR_ANY;
-  local_addr.sin_port = htons(43210);
+  local_addr.sin_port = htons(0);
   if (bind(sockfd, (const struct sockaddr *)&local_addr, sizeof(local_addr)) <
       0) {
     close(sockfd);
@@ -319,7 +320,7 @@ recursiveLookup(std::string &qname, QueryType qtype, DnsCache &cache,
 }
 
 inline void handleQuery(int sockfd, DnsCache &cache, NetworkConfig &netConf,
-                        TransactionTracker &tracker) {
+                        TransactionTracker &tracker, RateLimiter &rateLimiter) {
   // we receive a query
   BytePacketBuffer reqBuffer;
   struct sockaddr_in srcAddr;
@@ -339,6 +340,29 @@ inline void handleQuery(int sockfd, DnsCache &cache, NetworkConfig &netConf,
 
   // we parse request packet
   DnsPacket request = DnsPacket::fromBuffer(reqBuffer);
+
+  // get client ip
+  char clientIp[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &srcAddr.sin_addr, clientIp, INET_ADDRSTRLEN);
+  std::string clientIpString(clientIp);
+
+  // check rate limits
+  if (!rateLimiter.allowQuery(clientIpString)) {
+    std::cout << "Rate limited: " << clientIpString << std::endl;
+
+    // send refused
+    DnsPacket response;
+    response.header.id = request.header.id;
+    response.header.response = true;
+    response.header.rescode = ResultCode::REFUSED;
+
+    BytePacketBuffer resBuffer;
+    response.write(resBuffer);
+    sendto(sockfd, resBuffer.buf, resBuffer.currentPosition(), 0,
+           (struct sockaddr *)&srcAddr, sizeof(srcAddr));
+
+    return;
+  }
 
   // create response packet
   DnsPacket response;
