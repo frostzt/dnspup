@@ -7,7 +7,7 @@
 #include <mutex>
 #include <thread>
 
-#include "DnsCache.hpp"
+#include "ThreadSafeCache.hpp"
 
 class StatsLogger {
 private:
@@ -17,13 +17,13 @@ private:
   std::condition_variable cv;
   std::mutex cvMtx;
 
-  DnsCache &dnsCache;
+  ThreadSafeCache &dnsCache;
   size_t interval;
 
   void printStats();
 
 public:
-  explicit StatsLogger(size_t interval_, DnsCache &cache)
+  explicit StatsLogger(size_t interval_, ThreadSafeCache &cache)
       : dnsCache(cache), interval(interval_) {};
 
   ~StatsLogger() { stopLogger(); }

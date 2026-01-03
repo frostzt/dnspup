@@ -5,11 +5,15 @@
 #include <exception>
 #include <iostream>
 #include <netinet/in.h>
+#include <sys/_types/_socklen_t.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "BytePacketBuffer.hpp"
 #include "Core.hpp"
+#include "ThreadPool.hpp"
 #include "cache/StatsLogger.hpp"
+#include "cache/ThreadSafeCache.hpp"
 #include "config/NetworkConfig.hpp"
 #include "security/RateLimiter.hpp"
 #include "tracking/TransactionTracker.hpp"
@@ -57,8 +61,17 @@ int main() {
       std::cerr << "Warning: Failed to set socket timeout" << std::endl;
     }
 
+    // thread pool
+    size_t numThreads = std::thread::hardware_concurrency();
+    ThreadPool threadPool(numThreads);
+
+    std::cout << "DNS Server with " << numThreads << " worker threads "
+              << std::endl;
+
     // create cache
-    DnsCache cache(60, 86400); // runs every minute
+    ThreadSafeCache cache;
+
+    // DnsCache cache(60, 86400); // runs every minute
     cache.startCleanup();
 
     StatsLogger cacheStatsLogger(120, cache); // runs every 2 mins
@@ -80,7 +93,28 @@ int main() {
     // handle queries
     while (!g_shutdown_requested) {
       try {
-        handleQuery(sockfd, cache, networkConfig, tracker, rateLimiter);
+        BytePacketBuffer reqBuffer;
+        struct sockaddr_in srcAddr;
+        socklen_t srcAddrLen = sizeof(srcAddr);
+
+        ssize_t bytesReceived =
+            recvfrom(sockfd, reqBuffer.buf, 512, 0, (struct sockaddr *)&srcAddr,
+                     &srcAddrLen);
+        if (bytesReceived < 0) {
+          continue;
+        }
+
+        // dispatch to thread pool
+        threadPool.enqueue([sockfd, reqBuffer, srcAddr, &cache, &rateLimiter,
+                            &tracker, &networkConfig]() mutable {
+          try {
+            handleQueryThreaded(sockfd, reqBuffer, srcAddr, cache, rateLimiter,
+                                tracker, networkConfig);
+          } catch (const std::exception &e) {
+            std::cerr << "Query handling error: " << e.what() << std::endl;
+          }
+        });
+
       } catch (const std::exception &e) {
         std::cerr << "An exception occured: " << e.what() << std::endl;
       }
@@ -96,7 +130,7 @@ int main() {
 
     close(sockfd);
   } catch (const std::exception &e) {
-    std::cerr << "Error: " << e.what() << std::endl;
+    std::cerr << "Fatal error: " << e.what() << std::endl;
     return 1;
   }
 

@@ -21,7 +21,8 @@
 #include "RetryPolicy.hpp"
 #include "RootServers.hpp"
 #include "StringUtils.hpp"
-#include "cache/DnsCache.hpp"
+#include "cache/ThreadSafeCache.hpp"
+#include "cache/ThreadSafeCache.hpp"
 #include "common/ServerConfig.hpp"
 #include "config/NetworkConfig.hpp"
 #include "errors/errors.hpp"
@@ -136,7 +137,7 @@ inline DnsPacket lookup(std::string &qname, QueryType qtype, Server serverConf,
 }
 
 inline DnsPacket
-recursiveLookup(std::string &qname, QueryType qtype, DnsCache &cache,
+recursiveLookup(std::string &qname, QueryType qtype, ThreadSafeCache &cache,
                 NetworkConfig &netConf, TransactionTracker &tracker,
                 size_t depth = 0,
                 std::unordered_set<std::string> *visited = nullptr) {
@@ -319,110 +320,202 @@ recursiveLookup(std::string &qname, QueryType qtype, DnsCache &cache,
   throw std::runtime_error("all root servers failed");
 }
 
-inline void handleQuery(int sockfd, DnsCache &cache, NetworkConfig &netConf,
-                        TransactionTracker &tracker, RateLimiter &rateLimiter) {
-  // we receive a query
-  BytePacketBuffer reqBuffer;
-  struct sockaddr_in srcAddr;
-  socklen_t srcAddrLen = sizeof(srcAddr);
+inline void returnRefusedBecauseRateLimited(int sockfd,
+                                            std::string &clientIpString,
+                                            struct sockaddr_in srcAddr,
+                                            DnsPacket request) {
+  std::cout << "Rate limited: " << clientIpString << std::endl;
 
-  // receive data from the socket into the buffer
-  ssize_t bytesReceived = recvfrom(sockfd, reqBuffer.buf, 512, 0,
-                                   (struct sockaddr *)&srcAddr, &srcAddrLen);
-  if (bytesReceived < 0) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      return; // timeout -- just return, main loop will handle the shutdown
-              // thingy
-    }
-
-    throw std::runtime_error("failed to receive packet");
-  }
-
-  // we parse request packet
-  DnsPacket request = DnsPacket::fromBuffer(reqBuffer);
-
-  // get client ip
-  char clientIp[INET_ADDRSTRLEN];
-  inet_ntop(AF_INET, &srcAddr.sin_addr, clientIp, INET_ADDRSTRLEN);
-  std::string clientIpString(clientIp);
-
-  // check rate limits
-  if (!rateLimiter.allowQuery(clientIpString)) {
-    std::cout << "Rate limited: " << clientIpString << std::endl;
-
-    // send refused
-    DnsPacket response;
-    response.header.id = request.header.id;
-    response.header.response = true;
-    response.header.rescode = ResultCode::REFUSED;
-
-    BytePacketBuffer resBuffer;
-    response.write(resBuffer);
-    sendto(sockfd, resBuffer.buf, resBuffer.currentPosition(), 0,
-           (struct sockaddr *)&srcAddr, sizeof(srcAddr));
-
-    return;
-  }
-
-  // create response packet
+  // send refused
   DnsPacket response;
   response.header.id = request.header.id;
-  response.header.recursionDesired = true;
-  response.header.recursionAvailable = true;
   response.header.response = true;
-
-  // handle question
-  if (!request.questions.empty()) {
-    DnsQuestion question = request.questions.back();
-    request.questions.pop_back();
-
-    std::cout << "Received query: " << question << std::endl;
-
-    // forward query and handle response
-    try {
-      DnsPacket result = recursiveLookup(question.name, question.qtype, cache,
-                                         netConf, tracker);
-
-      response.questions.push_back(question);
-      response.header.rescode = result.header.rescode;
-
-      // answers
-      for (const auto &rec : result.answers) {
-        std::cout << "Answer: ";
-        std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
-        response.answers.push_back(rec);
-      }
-
-      // authorities
-      for (const auto &rec : result.authorities) {
-        std::cout << "Authority: ";
-        std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
-        response.authorities.push_back(rec);
-      }
-
-      // resources
-      for (const auto &rec : result.resources) {
-        std::cout << "Resource: ";
-        std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
-        response.resources.push_back(rec);
-      }
-    } catch (const std::exception &e) {
-      std::cerr << "Lookup failed: " << e.what() << std::endl;
-      response.header.rescode = ResultCode::SERVFAIL;
-    }
-  } else {
-    response.header.rescode = ResultCode::FORMERR;
-  }
+  response.header.rescode = ResultCode::REFUSED;
 
   BytePacketBuffer resBuffer;
   response.write(resBuffer);
+  sendto(sockfd, resBuffer.buf, resBuffer.currentPosition(), 0,
+         (struct sockaddr *)&srcAddr, sizeof(srcAddr));
+}
 
-  ssize_t bytesSent = sendto(sockfd, resBuffer.buf, resBuffer.currentPosition(),
-                             0, (struct sockaddr *)&srcAddr, sizeof(srcAddr));
+inline void handleQueryThreaded(int sockfd, BytePacketBuffer reqBuffer,
+                                struct sockaddr_in srcAddr,
+                                ThreadSafeCache &cache,
+                                RateLimiter &rateLimiter,
+                                TransactionTracker &tracker,
+                                NetworkConfig &netConf) {
+  try {
+    // get client ip
+    char clientIp[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &srcAddr.sin_addr, clientIp, INET_ADDRSTRLEN);
+    std::string clientIpString(clientIp);
 
-  if (bytesSent < 0) {
-    throw std::runtime_error("failed to send response");
+    DnsPacket request = DnsPacket::fromBuffer(reqBuffer);
+
+    // check rate limits
+    if (!rateLimiter.allowQuery(clientIpString)) {
+      returnRefusedBecauseRateLimited(sockfd, clientIpString, srcAddr, request);
+      return;
+    }
+
+    // create response packet
+    DnsPacket response;
+    response.header.id = request.header.id;
+    response.header.recursionDesired = true;
+    response.header.recursionAvailable = true;
+    response.header.response = true;
+
+    // handle question
+    if (!request.questions.empty()) {
+      DnsQuestion question = request.questions.back();
+      request.questions.pop_back();
+
+      std::cout << "Received query: " << question << std::endl;
+
+      // forward query and handle response
+      try {
+        DnsPacket result = recursiveLookup(question.name, question.qtype, cache,
+                                           netConf, tracker);
+
+        response.questions.push_back(question);
+        response.header.rescode = result.header.rescode;
+
+        // answers
+        for (const auto &rec : result.answers) {
+          std::cout << "Answer: ";
+          std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
+          response.answers.push_back(rec);
+        }
+
+        // authorities
+        for (const auto &rec : result.authorities) {
+          std::cout << "Authority: ";
+          std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
+          response.authorities.push_back(rec);
+        }
+
+        // resources
+        for (const auto &rec : result.resources) {
+          std::cout << "Resource: ";
+          std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
+          response.resources.push_back(rec);
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "Lookup failed: " << e.what() << std::endl;
+        response.header.rescode = ResultCode::SERVFAIL;
+      }
+    } else {
+      response.header.rescode = ResultCode::FORMERR;
+    }
+
+    BytePacketBuffer resBuffer;
+    response.write(resBuffer);
+
+    ssize_t bytesSent =
+        sendto(sockfd, resBuffer.buf, resBuffer.currentPosition(), 0,
+               (struct sockaddr *)&srcAddr, sizeof(srcAddr));
+
+    if (bytesSent < 0) {
+      throw std::runtime_error("failed to send response");
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Query handling error: " << e.what() << std::endl;
   }
 }
+
+// OLDER: Was pretty single threaded
+// inline void handleQuery(int sockfd, DnsCache &cache, NetworkConfig &netConf,
+//                         TransactionTracker &tracker, RateLimiter &rateLimiter) {
+//   // we receive a query
+//   BytePacketBuffer reqBuffer;
+//   struct sockaddr_in srcAddr;
+//   socklen_t srcAddrLen = sizeof(srcAddr);
+//
+//   // receive data from the socket into the buffer
+//   ssize_t bytesReceived = recvfrom(sockfd, reqBuffer.buf, 512, 0,
+//                                    (struct sockaddr *)&srcAddr, &srcAddrLen);
+//   if (bytesReceived < 0) {
+//     if (errno == EAGAIN || errno == EWOULDBLOCK) {
+//       return; // timeout -- just return, main loop will handle the shutdown
+//               // thingy
+//     }
+//
+//     throw std::runtime_error("failed to receive packet");
+//   }
+//
+//   // we parse request packet
+//   DnsPacket request = DnsPacket::fromBuffer(reqBuffer);
+//
+//   // get client ip
+//   char clientIp[INET_ADDRSTRLEN];
+//   inet_ntop(AF_INET, &srcAddr.sin_addr, clientIp, INET_ADDRSTRLEN);
+//   std::string clientIpString(clientIp);
+//
+//   // check rate limits
+//   if (!rateLimiter.allowQuery(clientIpString)) {
+//     returnRefusedBecauseRateLimited(sockfd, clientIpString, srcAddr, request);
+//     return;
+//   }
+//
+//   // create response packet
+//   DnsPacket response;
+//   response.header.id = request.header.id;
+//   response.header.recursionDesired = true;
+//   response.header.recursionAvailable = true;
+//   response.header.response = true;
+//
+//   // handle question
+//   if (!request.questions.empty()) {
+//     DnsQuestion question = request.questions.back();
+//     request.questions.pop_back();
+//
+//     std::cout << "Received query: " << question << std::endl;
+//
+//     // forward query and handle response
+//     try {
+//       DnsPacket result = recursiveLookup(question.name, question.qtype, cache,
+//                                          netConf, tracker);
+//
+//       response.questions.push_back(question);
+//       response.header.rescode = result.header.rescode;
+//
+//       // answers
+//       for (const auto &rec : result.answers) {
+//         std::cout << "Answer: ";
+//         std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
+//         response.answers.push_back(rec);
+//       }
+//
+//       // authorities
+//       for (const auto &rec : result.authorities) {
+//         std::cout << "Authority: ";
+//         std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
+//         response.authorities.push_back(rec);
+//       }
+//
+//       // resources
+//       for (const auto &rec : result.resources) {
+//         std::cout << "Resource: ";
+//         std::visit([](const auto &r) { std::cout << r << std::endl; }, rec);
+//         response.resources.push_back(rec);
+//       }
+//     } catch (const std::exception &e) {
+//       std::cerr << "Lookup failed: " << e.what() << std::endl;
+//       response.header.rescode = ResultCode::SERVFAIL;
+//     }
+//   } else {
+//     response.header.rescode = ResultCode::FORMERR;
+//   }
+//
+//   BytePacketBuffer resBuffer;
+//   response.write(resBuffer);
+//
+//   ssize_t bytesSent = sendto(sockfd, resBuffer.buf, resBuffer.currentPosition(),
+//                              0, (struct sockaddr *)&srcAddr, sizeof(srcAddr));
+//
+//   if (bytesSent < 0) {
+//     throw std::runtime_error("failed to send response");
+//   }
+// }
 
 #endif // CORE_DNS_HPP
