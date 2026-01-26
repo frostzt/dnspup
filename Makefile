@@ -33,7 +33,7 @@ run: $(TARGET)
 
 # Integration tests (Python/pytest)
 integration-test: $(TARGET)
-	cd tests/integration && python3 -m pytest -v
+	cd tests/integration && python3 -m pytest -
 
 # Run all tests (unit + integration)
 test-all: test integration-test
